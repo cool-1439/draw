@@ -1,0 +1,1777 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級抽籤加分程式</title>
+    <!-- 引入 Tailwind CSS 以進行快速美化 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 SheetJS library (保留以備不時之需，但主要邏輯改回原生解析) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <style>
+        /* 自定義樣式與動畫 */
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+        }
+        .student-cell {
+            transition: background-color 0.1s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease;
+        }
+        .student-cell .content-wrapper {
+             cursor: pointer;
+        }
+        /* .student-cell[data-seat]:not(.drawn-student):hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); 
+        } */
+        .highlight-draw-green {
+            transform: scale(1.05);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.7); /* green-500 */
+        }
+        .highlight-draw-pink {
+            transform: scale(1.05);
+            box-shadow: 0 0 15px rgba(236, 72, 153, 0.7); /* pink-500 */
+        }
+        .highlight-winner {
+            background-color: #fde047; /* yellow-300 */
+            transform: scale(1.1);
+            font-weight: bold;
+            border-width: 3px;
+            border-color: #f97316; /* orange-500 */
+            box-shadow: 0 0 15px #f97316;
+        }
+        .drawn-student {
+            background-color: #9ca3af !important; /* gray-400 */
+            color: white;
+        }
+        .btn {
+            transition: all 0.2s ease;
+        }
+        .btn:active {
+            transform: scale(0.95);
+        }
+        #immunityToggle:checked::before, #ranmaToggle:checked::before {
+            transform: translateX(1rem);
+        }
+        /* 九宮格樣式 */
+        #scoreGrid {
+            aspect-ratio: 1 / 1;
+        }
+        .score-cell {
+             aspect-ratio: 1 / 1;
+             transition: transform 0.2s ease-in-out; /* Add transition for hover effect */
+        }
+        .score-cell.can-hover:hover {
+            transform: scale(1.05); /* Add hover effect */
+        }
+        /* 閃爍動畫 */
+        @keyframes blink-effect {
+            50% { opacity: 0.3; }
+        }
+        .blinking {
+            animation: blink-effect 0.5s step-end 3;
+        }
+        /* Modal 樣式 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            width: 90%;
+            max-width: 500px;
+        }
+        /* 批次加分按鈕選中樣式 */
+        .batch-reason-btn.selected-pos {
+            background-color: #15803d; /* green-700 */
+            color: white;
+            transform: scale(0.95);
+        }
+        .batch-reason-btn.selected-neg {
+            background-color: #be185d; /* pink-700 */
+            color: white;
+            transform: scale(0.95);
+        }
+        /* 積分視覺方塊樣式 */
+        .score-bar-unit {
+            width: 4px;
+            height: 16px;
+            margin-right: 1px;
+            display: inline-block;
+            border-radius: 1px;
+        }
+        .score-bar-green {
+            background-color: #22c55e; /* green-500 */
+        }
+        .score-bar-red {
+            background-color: #ef4444; /* red-500 */
+        }
+        /* 原始紀錄表格樣式 */
+        #scoreRawRecordsTable {
+            min-width: 600px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 p-4 sm:p-6 md:p-8">
+    <div id="app-container" class="max-w-7xl mx-auto space-y-8">
+
+        <!-- 標題與狀態區 -->
+        <div id="fileImportSection" class="bg-white p-6 rounded-2xl shadow-lg">
+            <h1 class="text-3xl font-bold text-center text-gray-700 mb-4">班級抽籤加分程式</h1>
+            <div id="loadingStatus" class="text-center text-gray-500">正在載入名單...</div>
+        </div>
+        
+        <!-- 抽籤與名單區塊容器 -->
+        <div id="draw-area" class="hidden">
+            <!-- 加扣分區 (初始隱藏，抽中或點擊後移到名單上方) -->
+            <div id="resultSection" class="bg-white p-6 rounded-2xl shadow-lg hidden text-center mb-8">
+                <h2 id="resultTitle" class="text-4xl font-extrabold mb-6"></h2>
+                 <div id="scoreGrid" class="grid grid-cols-3 gap-2 w-full max-w-sm sm:max-w-md mx-auto">
+                     <!-- 九宮格將會動態生成於此 -->
+                 </div>
+            </div>
+
+            <!-- 班級選擇與學生名單區 -->
+            <div id="main-content" class="bg-white p-6 rounded-2xl shadow-lg">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                    <div class="flex-grow">
+                        <label for="classSelector" class="block mb-2 text-sm font-medium text-gray-900">選擇班級</label>
+                        <select id="classSelector" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"></select>
+                    </div>
+                    <div class="flex items-center gap-4 self-end flex-wrap justify-end"> <!-- Toggles container -->
+                        <div class="flex items-center space-x-2">
+                            <label for="immunityToggle" class="text-sm font-medium text-gray-700">豁免抽籤</label>
+                            <input type="checkbox" id="immunityToggle" class="h-6 w-11 appearance-none rounded-full bg-gray-300 checked:bg-green-500 transition-colors duration-200 ease-in-out cursor-pointer relative before:content-[''] before:h-5 before:w-5 before:rounded-full before:bg-white before:shadow-md before:absolute before:top-0.5 before:left-0.5 before:transition-transform before:duration-200 ease-in-out" checked>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <label for="ranmaToggle" class="text-sm font-medium text-gray-700">亂馬1/2</label>
+                            <input type="checkbox" id="ranmaToggle" class="h-6 w-11 appearance-none rounded-full bg-gray-300 checked:bg-blue-500 transition-colors duration-200 ease-in-out cursor-pointer relative before:content-[''] before:h-5 before:w-5 before:rounded-full before:bg-white before:shadow-md before:absolute before:top-0.5 before:left-0.5 before:transition-transform before:duration-200 ease-in-out">
+                        </div>
+                    </div>
+                    <button id="drawButton" class="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-bold py-2.5 px-8 rounded-lg shadow-md btn self-end">
+                        開始抽籤
+                    </button>
+                </div>
+                
+                <div id="selectionFilters" class="flex justify-center items-center gap-2 flex-wrap mb-4">
+                    <button id="selectAllBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold py-1 px-3 rounded-full btn">全選</button>
+                    <button id="selectBoysBtn" class="bg-blue-200 hover:bg-blue-300 text-blue-700 text-sm font-semibold py-1 px-3 rounded-full btn">男生</button>
+                    <button id="selectGirlsBtn" class="bg-pink-200 hover:bg-pink-300 text-pink-700 text-sm font-semibold py-1 px-3 rounded-full btn">女生</button>
+                    <button id="deselectAllBtn" class="bg-gray-500 hover:bg-gray-600 text-white text-sm font-semibold py-1 px-3 rounded-full btn">取消勾選</button>
+                </div>
+
+                <h2 id="gridTitle" class="text-xl font-semibold mb-4 text-center"></h2>
+                <div id="studentGrid" class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-3 text-center">
+                    <!-- 學生方格將會動態生成於此 -->
+                </div>
+                <div id="batchScoreContainer" class="text-center mt-4 hidden">
+                    <button id="batchScoreButton" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg shadow-md btn">
+                        為已選學生加分
+                    </button>
+                </div>
+                
+                <!-- 新增：轉移箭頭區 -->
+                <div class="grid grid-cols-2 gap-4 my-6">
+                    <button id="moveToExcludedBtn" class="bg-slate-100 hover:bg-slate-200 border-2 border-slate-200 text-slate-600 font-black py-3 rounded-2xl btn flex justify-center items-center shadow-sm text-lg sm:text-xl transition-colors">
+                        ▼ 移至暫停區
+                    </button>
+                    <button id="moveToMainBtn" class="bg-slate-100 hover:bg-slate-200 border-2 border-slate-200 text-slate-600 font-black py-3 rounded-2xl btn flex justify-center items-center shadow-sm text-lg sm:text-xl transition-colors">
+                        ▲ 移回抽籤區
+                    </button>
+                </div>
+
+                <!-- 新增：暫停抽籤區 -->
+                <div id="excludedSection" class="bg-[#f1f5f9] border-2 border-dashed border-slate-300 p-4 sm:p-6 rounded-3xl mb-4">
+                    <h3 class="text-sm font-bold mb-4 text-center text-slate-500 tracking-widest uppercase">暫停參與抽籤名單</h3>
+                    <div id="excludedGrid" class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-3 text-center min-h-[5rem]">
+                        <!-- 被排除的學生方格將會動態生成於此 -->
+                    </div>
+                </div>
+
+                <!-- 學生積分概況區 -->
+                <div id="scoreOverviewSection" class="mt-8 border-t pt-6">
+                    <h3 class="text-xl font-bold mb-4 text-center text-gray-700">學生積分概況</h3>
+                    <div id="scoreOverviewStatus" class="text-center text-gray-500 mb-4">正在載入積分數據...</div>
+                    <div id="scoreOverviewList" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        <!-- 積分列表將動態生成於此 -->
+                    </div>
+                    
+                    <!-- 學生原始記錄列表 (新區塊) -->
+                    <div id="scoreRawRecordsContainer" class="mt-8">
+                        <h4 class="text-lg font-bold mb-3 text-gray-700 text-center">本班原始加減分記錄</h4>
+                        <div class="overflow-x-auto text-sm">
+                            <table id="scoreRawRecordsTable" class="w-full text-left text-gray-500 border border-gray-200 rounded-lg">
+                                <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+                                    <tr>
+                                        <th scope="col" class="px-3 py-2">座號</th>
+                                        <th scope="col" class="px-3 py-2">姓名</th>
+                                        <th scope="col" class="px-3 py-2">加減分</th>
+                                        <th scope="col" class="px-3 py-2">理由/事項</th>
+                                        <th scope="col" class="px-3 py-2">日期</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 原始記錄將動態生成於此 -->
+                                </tbody>
+                            </table>
+                            <div id="noRawRecordsMessage" class="text-center text-gray-500 py-4 hidden">本班級尚無詳細記錄。</div>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </div>
+
+        <!-- 歷史記錄區 -->
+        <div id="historySection" class="bg-white p-6 rounded-2xl shadow-lg hidden">
+            <div class="flex justify-between items-center mb-4 gap-2 flex-wrap">
+                 <h2 class="text-2xl font-bold">歷史記錄</h2>
+                <button id="exportButton" class="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg shadow-md btn">儲存資料</button>
+            </div>
+            <div class="overflow-x-auto">
+                <table id="historyTable" class="w-full text-sm text-left text-gray-500">
+                    <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3">日期</th>
+                            <th scope="col" class="px-6 py-3">時間</th>
+                            <th scope="col" class="px-6 py-3">班級</th>
+                            <th scope="col" class="px-6 py-3">座號</th>
+                            <th scope="col" class="px-6 py-3">姓名</th>
+                            <th scope="col" class="px-6 py-3">加減分</th>
+                            <th scope="col" class="px-6 py-3">理由</th>
+                            <th scope="col" class="px-6 py-3">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 清除快取按鈕 -->
+        <div id="clearCacheSection" class="text-center hidden">
+             <button id="clearDataButton" class="w-full max-w-md mx-auto bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg btn">清除快取並重載</button>
+        </div>
+    </div>
+    
+    <!-- Modals -->
+    <div id="editRecordModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4">編輯記錄</h3>
+            <div class="space-y-4">
+                <div>
+                    <label for="editScoreInput" class="block mb-2 text-sm font-medium text-gray-900">加減分</label>
+                    <input type="number" id="editScoreInput" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label for="editReasonInput" class="block mb-2 text-sm font-medium text-gray-900">理由</label>
+                    <input type="text" id="editReasonInput" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelEditButton" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="saveEditButton" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn">儲存</button>
+            </div>
+        </div>
+    </div>
+    <div id="deleteConfirmModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4">確認刪除</h3>
+            <p>您確定要刪除這筆記錄嗎？此操作無法復原。</p>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelDeleteButton" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="confirmDeleteButton" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg btn">確認刪除</button>
+            </div>
+        </div>
+    </div>
+     <div id="urlConfirmModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4">確認儲存至雲端</h3>
+            <p class="text-sm mb-2">程式將把 <strong id="newRecordCount"></strong> 筆紀錄提交至 Google 表單。以下是第一筆紀錄產生的提交網址範例，方便您檢查：</p>
+            <textarea id="urlDisplayTextArea" class="w-full h-32 p-2 border border-gray-300 rounded-lg text-xs" readonly></textarea>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelSubmitButton" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="confirmSubmitButton" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg btn">確認儲存</button>
+            </div>
+        </div>
+    </div>
+    <!-- Batch Score Modal -->
+    <div id="batchScoreModal" class="modal-overlay hidden">
+        <div class="modal-content !max-w-3xl"> <!-- Use a wider modal -->
+            <h3 class="text-xl font-bold mb-4">批次加扣分</h3>
+            <div class="flex flex-col sm:flex-row gap-4">
+                <!-- Left: Selected Students List (20%) -->
+                <div class="w-full sm:w-1/5">
+                    <h4 class="font-semibold mb-2 text-center">已選學生</h4>
+                    <div id="batchStudentList" class="h-48 sm:h-64 overflow-y-auto bg-gray-100 p-2 rounded-lg border">
+                        <!-- Student list will be populated here -->
+                    </div>
+                </div>
+                <!-- Middle: Positive Reasons (40%) -->
+                <div class="w-full sm:w-2/5">
+                    <h4 class="font-semibold mb-2 text-center text-green-600">加分事項 (可複選)</h4>
+                    <div id="batchPositiveReasons" class="grid grid-cols-2 gap-2">
+                        <!-- Positive reason buttons will be populated here -->
+                    </div>
+                </div>
+                <!-- Right: Negative Reasons (40%) -->
+                <div class="w-full sm:w-2/5">
+                    <h4 class="font-semibold mb-2 text-center text-red-600">扣分事項 (可複選)</h4>
+                    <div id="batchNegativeReasons" class="grid grid-cols-2 gap-2">
+                        <!-- Negative reason buttons will be populated here -->
+                    </div>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelBatchScoreButton" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="confirmBatchScoreButton" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn">送出紀錄</button>
+            </div>
+        </div>
+    </div>
+
+
+<script>
+    // --- GOOGLE SHEETS CSV 名單連結 ---
+    const STUDENT_LIST_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRZEP0OiJ9tiinNvP3HRjeZW4rSCZjQDHr4DMJ9tvMSrLaEUASk_VvBJOtAFQ9ptsmOSorkCSQSHqY1/pub?gid=1254470678&single=true&output=csv';
+    // ---------------------------------
+
+    // --- GOOGLE FORM 設定 ---
+    const GOOGLE_FORM_CONFIG = {
+        URL: 'https://docs.google.com/forms/d/e/1FAIpQLSevoKlCojxo7G92Q3o268gumtqZSMJ2oiq6_vfz2zwcJz2-6g/formResponse',
+        ENTRY_DATE: 'entry.1288177617',
+        ENTRY_TIME: 'entry.653049602',
+        ENTRY_CLASS: 'entry.1078876144',
+        ENTRY_SEAT: 'entry.2006022978',
+        ENTRY_NAME: 'entry.461990919',
+        ENTRY_SCORE: 'entry.372102319',
+        ENTRY_REASON: 'entry.1725016392'
+    };
+    const SCORING_ITEMS_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRZEP0OiJ9tiinNvP3HRjeZW4rSCZjQDHr4DMJ9tvMSrLaEUASk_VvBJOtAFQ9ptsmOSorkCSQSHqY1/pub?gid=1605988149&single=true&output=csv';
+    
+    // --- 學生積分記錄連結 (新功能) ---
+    // 使用者提供的發布網址 (已覆蓋原本的 ID + 拼接方式)
+    const RECORDS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRZEP0OiJ9tiinNvP3HRjeZW4rSCZjQDHr4DMJ9tvMSrLaEUASk_VvBJOtAFQ9ptsmOSorkCSQSHqY1/pub?gid=678955436&single=true&output=csv";
+    // ---------------------------------
+
+    // 全域變數
+    const loadingStatus = document.getElementById('loadingStatus');
+    const drawArea = document.getElementById('draw-area');
+    const clearCacheSection = document.getElementById('clearCacheSection');
+    const clearDataButton = document.getElementById('clearDataButton');
+    const classSelector = document.getElementById('classSelector');
+    const studentGrid = document.getElementById('studentGrid');
+    const gridTitle = document.getElementById('gridTitle');
+    const drawButton = document.getElementById('drawButton');
+    const resultSection = document.getElementById('resultSection');
+    const resultTitle = document.getElementById('resultTitle');
+    const scoreGrid = document.getElementById('scoreGrid');
+    const historySection = document.getElementById('historySection');
+    const historyTable = document.getElementById('historyTable').getElementsByTagName('tbody')[0];
+    const exportButton = document.getElementById('exportButton');
+    const mainContent = document.getElementById('main-content');
+    const immunityToggle = document.getElementById('immunityToggle');
+    const batchScoreContainer = document.getElementById('batchScoreContainer');
+    const batchScoreButton = document.getElementById('batchScoreButton');
+    const ranmaToggle = document.getElementById('ranmaToggle');
+    const scoreOverviewSection = document.getElementById('scoreOverviewSection');
+    const scoreOverviewList = document.getElementById('scoreOverviewList');
+    const scoreOverviewStatus = document.getElementById('scoreOverviewStatus'); // 新增 Status 元素
+    const scoreRawRecordsTableBody = document.getElementById('scoreRawRecordsTable').getElementsByTagName('tbody')[0];
+    const noRawRecordsMessage = document.getElementById('noRawRecordsMessage');
+    
+    // Modal 變數
+    const editRecordModal = document.getElementById('editRecordModal');
+    const editScoreInput = document.getElementById('editScoreInput');
+    const editReasonInput = document.getElementById('editReasonInput');
+    const saveEditButton = document.getElementById('saveEditButton');
+    const cancelEditButton = document.getElementById('cancelEditButton');
+    const deleteConfirmModal = document.getElementById('deleteConfirmModal');
+    const confirmDeleteButton = document.getElementById('confirmDeleteButton');
+    const cancelDeleteButton = document.getElementById('cancelDeleteButton');
+    const urlConfirmModal = document.getElementById('urlConfirmModal');
+    const newRecordCount = document.getElementById('newRecordCount');
+    const urlDisplayTextArea = document.getElementById('urlDisplayTextArea');
+    const confirmSubmitButton = document.getElementById('confirmSubmitButton');
+    const cancelSubmitButton = document.getElementById('cancelSubmitButton');
+    const batchScoreModal = document.getElementById('batchScoreModal');
+    const batchStudentList = document.getElementById('batchStudentList');
+    const batchPositiveReasons = document.getElementById('batchPositiveReasons');
+    const batchNegativeReasons = document.getElementById('batchNegativeReasons');
+    const confirmBatchScoreButton = document.getElementById('confirmBatchScoreButton');
+    const cancelBatchScoreButton = document.getElementById('cancelBatchScoreButton');
+    
+    // 新增：暫停區元素
+    const moveToExcludedBtn = document.getElementById('moveToExcludedBtn');
+    const moveToMainBtn = document.getElementById('moveToMainBtn');
+    const excludedGrid = document.getElementById('excludedGrid');
+
+    // Selection Filter Buttons
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    const selectBoysBtn = document.getElementById('selectBoysBtn');
+    const selectGirlsBtn = document.getElementById('selectGirlsBtn');
+    const deselectAllBtn = document.getElementById('deselectAllBtn');
+
+    let recordIndexToDelete = null;
+    let recordIndexToEdit = null;
+
+    let allStudents = {};
+    let records = [];
+    let positiveReasons = [];
+    let negativeReasons = [];
+    let manualScores = new Map(); // 用於儲存從CSV讀取的加扣分項目與分數
+    const positiveScores = ["+3", "+5", "+5", "+5", "+6", "+6", "+6", "+8"];
+    
+    let isPositiveMode = true;
+    let currentScoringMode = 'draw';
+    let drawnStudents = new Set();
+    let currentWinner = null;
+    let selectedScore = null;
+    let selectedReason = null;
+    let animationInterval = null;
+    let isSpinning = false;
+    let scoreRecordsLoadedSuccessfully = false; // 新增狀態旗標
+    const STORAGE_KEY = 'luckyDrawStudentData';
+    const RECORDS_STORAGE_KEY = 'luckyDrawRecordsData'; // 新增紀錄儲存 Key
+    let lastExportedIndex = -1;
+    let selectedStudents = new Set();
+    let selectedReasons = new Set();
+    let reshuffleCount = 0; // 用於扣分模式的洗牌計數
+    let lastDrawnGender = null; // 用於亂馬1/2模式
+    let excludedStudentsMap = {}; // 新增：用於記錄各班被暫停抽籤的學生座號 Set
+
+
+    // 事件監聽
+    document.addEventListener('DOMContentLoaded', loadInitialData);
+    classSelector.addEventListener('change', () => {
+        renderStudentGrid();
+        renderScoreOverview();
+        renderRawRecords();
+    });
+    drawButton.addEventListener('click', startDraw);
+    exportButton.addEventListener('click', exportData);
+    saveEditButton.addEventListener('click', saveEdit);
+    cancelEditButton.addEventListener('click', () => editRecordModal.classList.add('hidden'));
+    confirmDeleteButton.addEventListener('click', deleteRecord);
+    cancelDeleteButton.addEventListener('click', () => deleteConfirmModal.classList.add('hidden'));
+    clearDataButton.addEventListener('click', () => {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(RECORDS_STORAGE_KEY);
+        location.reload();
+    });
+    cancelSubmitButton.addEventListener('click', () => urlConfirmModal.classList.add('hidden'));
+    confirmSubmitButton.addEventListener('click', async () => {
+        urlConfirmModal.classList.add('hidden');
+        await submitAllRecordsToGoogleForm();
+        downloadAllRecordsAsCsv();
+    });
+    batchScoreButton.addEventListener('click', handleBatchScoreClick);
+    cancelBatchScoreButton.addEventListener('click', () => batchScoreModal.classList.add('hidden'));
+    confirmBatchScoreButton.addEventListener('click', submitBatchScore);
+    selectAllBtn.addEventListener('click', selectAllStudents);
+    selectBoysBtn.addEventListener('click', () => selectStudentsByGender('男'));
+    selectGirlsBtn.addEventListener('click', () => selectStudentsByGender('女'));
+    deselectAllBtn.addEventListener('click', clearSelection);
+
+    // 新增：箭頭按鈕事件監聽
+    moveToExcludedBtn.addEventListener('click', () => {
+        const selectedClass = classSelector.value;
+        if (!selectedClass || selectedStudents.size === 0) return;
+        if (!excludedStudentsMap[selectedClass]) excludedStudentsMap[selectedClass] = new Set();
+
+        selectedStudents.forEach(seat => {
+            excludedStudentsMap[selectedClass].add(seat);
+        });
+        clearSelection();
+        renderStudentGrid();
+    });
+
+    moveToMainBtn.addEventListener('click', () => {
+        const selectedClass = classSelector.value;
+        if (!selectedClass || selectedStudents.size === 0) return;
+        if (!excludedStudentsMap[selectedClass]) return;
+
+        selectedStudents.forEach(seat => {
+            excludedStudentsMap[selectedClass].delete(seat);
+        });
+        clearSelection();
+        renderStudentGrid();
+    });
+
+    
+    function saveDataToLocalStorage(data) {
+       try {
+            const jsonString = JSON.stringify(data);
+            const encodedData = btoa(encodeURIComponent(jsonString));
+            localStorage.setItem(STORAGE_KEY, encodedData);
+       } catch (e) {
+            console.error("儲存資料失敗:", e);
+            alert("儲存名單資料失敗，可能是瀏覽器不支援或儲存空間已滿。");
+       }
+    }
+
+    // 儲存紀錄到 LocalStorage
+    function saveRecordsToLocalStorage() {
+        try {
+            const jsonString = JSON.stringify(records);
+            const encodedData = btoa(encodeURIComponent(jsonString));
+            localStorage.setItem(RECORDS_STORAGE_KEY, encodedData);
+        } catch (e) {
+            console.error("儲存紀錄失敗:", e);
+        }
+    }
+
+    async function loadInitialData() {
+        loadingStatus.textContent = '正在載入名單與加分項目...';
+        
+        // 平行載入所有資料
+        const [studentDataLoaded, scoringItemsLoaded, remoteRecordsLoaded] = await Promise.all([
+            fetchAndParseDataFromUrl(),
+            fetchScoringItems(),
+            fetchRemoteRecords()
+        ]);
+
+        if (!scoringItemsLoaded) {
+            console.warn("使用預設加扣分項目。");
+            alert('加扣分項目載入失敗，將使用預設值。');
+        }
+        
+        // 若雲端無紀錄，則嘗試讀取本地紀錄
+        if (!remoteRecordsLoaded) {
+             loadRecordsFromLocalStorage();
+        }
+        scoreRecordsLoadedSuccessfully = remoteRecordsLoaded; // 設定旗標
+
+        if (!studentDataLoaded) {
+            loadingStatus.textContent = '雲端載入失敗，嘗試從本機快取載入...';
+            const loadedFromCache = loadDataFromLocalStorage();
+            if (loadedFromCache) {
+                loadingStatus.innerHTML = '<span class="text-yellow-600">已從本機快取載入名單</span>';
+            } else {
+                loadingStatus.innerHTML = '<span class="text-red-600">載入名單失敗！請檢查網路連線或試算表連結。</span>';
+            }
+        } else {
+            loadingStatus.innerHTML = '<span class="text-green-600">已從雲端載入最新名單</span>';
+        }
+        
+        // 初始載入後渲染畫面
+        renderHistory();
+        renderScoreOverview();
+        renderRawRecords();
+    }
+
+    // 從 LocalStorage 讀取紀錄
+    function loadRecordsFromLocalStorage() {
+        const storedRecords = localStorage.getItem(RECORDS_STORAGE_KEY);
+        if (storedRecords) {
+            try {
+                const decodedData = decodeURIComponent(atob(storedRecords));
+                records = JSON.parse(decodedData);
+            } catch (e) {
+                console.error("讀取紀錄失敗:", e);
+                localStorage.removeItem(RECORDS_STORAGE_KEY);
+                records = [];
+            }
+        }
+    }
+
+    // --- CSV 解析輔助函式 ---
+    // 能夠處理包含引號和逗號的 CSV 行
+    function parseCSVLine(str) {
+        const arr = [];
+        let quote = false;
+        let col = "";
+        for (let c = 0; c < str.length; c++) {
+            let cc = str[c];
+            if (cc === '"') {
+                quote = !quote;
+            } else if (cc === ',' && !quote) {
+                arr.push(col);
+                col = "";
+            } else {
+                col += cc;
+            }
+        }
+        arr.push(col);
+        return arr.map(s => s.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
+    }
+
+    // 新增：手動解析從遠端 Google Sheet 讀取的紀錄 (穩健版)
+    async function fetchRemoteRecords() {
+        try {
+            const fetchUrl = `${RECORDS_URL}&_=${new Date().getTime()}`;
+            
+            // 獲取原始數據
+            const response = await fetch(fetchUrl);
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+
+            const csvText = await response.text();
+            
+            if (csvText.trim().startsWith('<!DOCTYPE html>') || csvText.includes('<html')) {
+                throw new Error('Received HTML instead of CSV (Sheet likely not published)');
+            }
+
+            // 將 CSV 分行
+            const lines = csvText.split(/\r\n|\n/).filter(line => line.trim());
+            if (lines.length === 0) return false;
+
+            // 尋找標題列 (掃描前 10 行)
+            let headerIndex = -1;
+            let headerMap = {
+                date: -1, time: -1, class: -1, seat: -1, name: -1, score: -1, reason: -1
+            };
+
+            for(let i=0; i < Math.min(lines.length, 10); i++) {
+                const row = parseCSVLine(lines[i]);
+                // 檢查是否包含關鍵欄位
+                let matchCount = 0;
+                row.forEach((h, idx) => {
+                    const normalizedH = h.toLowerCase().trim();
+                    if (normalizedH.includes('日期') || normalizedH.includes('date')) matchCount++;
+                    if (normalizedH.includes('班級') || normalizedH.includes('class')) matchCount++;
+                    if (normalizedH.includes('座號') || normalizedH.includes('seat')) matchCount++;
+                    if (normalizedH.includes('加扣分') || normalizedH.includes('score')) matchCount++;
+                });
+                
+                // 如果找到至少 3 個關鍵欄位，認定此行為標題
+                if(matchCount >= 3) {
+                    headerIndex = i;
+                    row.forEach((h, idx) => {
+                        const normalizedH = h.toLowerCase().trim();
+                        if (normalizedH.includes('日期') || normalizedH.includes('date')) headerMap.date = idx;
+                        else if (normalizedH.includes('時間') || normalizedH.includes('time')) headerMap.time = idx;
+                        else if (normalizedH.includes('班級') || normalizedH.includes('class')) headerMap.class = idx;
+                        else if (normalizedH.includes('座號') || normalizedH.includes('seat')) headerMap.seat = idx;
+                        else if (normalizedH.includes('姓名') || normalizedH.includes('name')) headerMap.name = idx;
+                        else if (normalizedH.includes('加扣分') || normalizedH.includes('加減分') || normalizedH.includes('分數') || normalizedH.includes('score')) headerMap.score = idx;
+                        else if (normalizedH.includes('加扣分事項') || normalizedH.includes('理由') || normalizedH.includes('事由') || normalizedH.includes('reason')) headerMap.reason = idx;
+                    });
+                    break;
+                }
+            }
+
+            if (headerIndex === -1) {
+                console.warn("無法自動識別 CSV 標題列，嘗試使用預設索引。");
+                // 預設索引: 時間戳記(0), 日期(1), 時間(2), 班級(3), 座號(4), 姓名(5), 加扣分(6), 加扣分事項(7)
+                headerMap = { date: 1, time: 2, class: 3, seat: 4, name: 5, score: 6, reason: 7 };
+                headerIndex = 0; // 假設第一行是標題 (即使沒對上)
+            }
+
+            const tempRecords = [];
+            // 從標題列的下一行開始讀取
+            for (let i = headerIndex + 1; i < lines.length; i++) {
+                const row = parseCSVLine(lines[i]);
+                if (row.length < 3) continue; // 忽略過短的行
+
+                // 讀取分數時，將其字串形式（可能帶有負號）傳入，然後解析
+                const scoreString = (row[headerMap.score] || '0').trim(); 
+
+                const record = {
+                    date: row[headerMap.date] || '',
+                    time: row[headerMap.time] || '',
+                    className: (row[headerMap.class] || '').trim(), // 確保班級名稱去除空白
+                    seat: parseInt(row[headerMap.seat], 10),
+                    name: row[headerMap.name] || '',
+                    score: parseInt(scoreString.replace(/\+/g, ''), 10), 
+                    reason: row[headerMap.reason] || ''
+                };
+
+                // 檢查數據有效性
+                if (record.className && !isNaN(record.seat) && !isNaN(record.score)) {
+                    tempRecords.push(record);
+                }
+            }
+
+            if (tempRecords.length > 0) {
+                records = tempRecords;
+                console.log(`成功從雲端載入 ${records.length} 筆紀錄 (Manual CSV Parse)`);
+                saveRecordsToLocalStorage(); // 同步到本地
+                return true;
+            }
+            return false;
+
+        } catch (e) {
+            console.error('Fetch remote records failed (Manual Parse):', e);
+            scoreOverviewStatus.classList.remove('hidden');
+            scoreOverviewStatus.classList.add('text-red-600', 'font-bold', 'p-2', 'bg-red-100', 'rounded');
+            scoreOverviewStatus.innerHTML = `⚠️ 積分讀取失敗 (雲端)。請確認試算表連結與權限。`;
+            return false;
+        }
+    }
+
+    async function fetchScoringItems() {
+        try {
+            const response = await fetch(`${SCORING_ITEMS_URL}&_=${new Date().getTime()}`);
+            if (!response.ok) {
+                console.error('Scoring items fetch failed:', response.statusText);
+                return false;
+            }
+            const csvText = await response.text();
+            const lines = csvText.split(/\r\n|\n/).filter(line => line.trim());
+            const data = lines.map(line => line.split(',').map(item => item.trim()));
+            
+            const tempPositiveReasons = [];
+            const tempNegativeReasons = [];
+            const tempManualScores = new Map();
+
+            data.forEach(row => {
+                if (row.length >= 3) {
+                    const id = parseInt(row[0], 10);
+                    const reason = row[1];
+                    const score = parseInt(row[2], 10);
+                    if (!isNaN(id) && reason && !isNaN(score)) {
+                        tempManualScores.set(reason, score);
+                        if (id >= 1 && id <= 8) {
+                            tempPositiveReasons.push(reason);
+                        } else if (id >= 9 && id <= 16) {
+                            tempNegativeReasons.push(reason);
+                        }
+                    }
+                }
+            });
+
+            if (tempPositiveReasons.length > 0) {
+                positiveReasons = tempPositiveReasons;
+                negativeReasons = tempNegativeReasons;
+                manualScores = tempManualScores;
+                console.log("加扣分項目載入成功");
+                return true;
+            } else {
+                 throw new Error("CSV中未找到有效的加扣分項目。");
+            }
+
+        } catch (error) {
+            console.error('Fetching or parsing scoring items failed:', error);
+            // Fallback to original hardcoded values if fetch fails
+            positiveReasons = ["主動回答", "作業優良", "熱心助人", "秩序良好", "表現積極", "上課專心", "勇於發表", "訂正迅速"];
+            negativeReasons = ["聊天講話", "不專心", "打瞌睡", "玩遊戲", "作業未交", "干擾同學", "遲到", "訂正草率"];
+            manualScores.clear();
+            positiveReasons.forEach(r => manualScores.set(r, 1));
+            negativeReasons.forEach(r => manualScores.set(r, -1));
+            return false;
+        }
+    }
+
+    async function fetchAndParseDataFromUrl() {
+        if (!STUDENT_LIST_URL || STUDENT_LIST_URL.startsWith('請在此貼上')) {
+            return false;
+        }
+        try {
+            const response = await fetch(`${STUDENT_LIST_URL}&_=${new Date().getTime()}`);
+            if (!response.ok) {
+                console.error('Network response was not ok');
+                return false;
+            }
+            const csvText = await response.text();
+            const lines = csvText.split(/\r\n|\n/).filter(line => line.trim());
+            const data = lines.map(line => line.split(',').map(item => item.trim()));
+            
+            const success = parseStudentData(data, true);
+            return success;
+        } catch (error) {
+            console.error('Fetching or parsing from URL failed:', error);
+            return false;
+        }
+    }
+
+    function parseStudentData(data, shouldSave) {
+        const tempStudents = {};
+        const isArrayOfArrays = Array.isArray(data) && Array.isArray(data[0]);
+        
+        if (isArrayOfArrays) {
+            let startIndex = 0;
+            if (data[0] && data[0][1] && String(data[0][1]).trim() === '座號') {
+                startIndex = 1;
+            }
+            for(let i = startIndex; i < data.length; i++) {
+                 const row = data[i];
+                 if (row && row.length >= 5) {
+                     const [className, seat, , gender, name] = row.map(String);
+                     if (className && seat && name && !isNaN(parseInt(seat))) {
+                         if (!tempStudents[className]) tempStudents[className] = [];
+                         tempStudents[className].push({ seat: parseInt(seat), name, gender });
+                     }
+                 }
+            }
+        } else { 
+             Object.assign(tempStudents, data);
+        }
+
+        if (Object.keys(tempStudents).length > 0) {
+            allStudents = tempStudents;
+            if (shouldSave) {
+                saveDataToLocalStorage(allStudents);
+            }
+            setupUIWithData();
+            return true;
+        } else {
+            if (shouldSave) alert('無法從雲端解析名單資料，請確認格式。');
+            return false;
+        }
+    }
+    
+    function setupUIWithData() {
+        const importSection = document.getElementById('fileImportSection');
+        if (importSection) {
+            importSection.style.display = 'none';
+        }
+        drawArea.classList.remove('hidden');
+        clearCacheSection.classList.remove('hidden');
+        populateClassSelector();
+        const lastIndex = localStorage.getItem('lastExportedIndex');
+        if (lastIndex) lastExportedIndex = parseInt(lastIndex, 10);
+    }
+    
+    const chineseNumerals = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10, '十一': 11, '十二': 12 };
+    function getNumericValue(text) {
+        const match = text.match(/([一二三四五六七八九十]+|[0-9]+)/);
+        if (!match) return 999;
+        const numPart = match[1];
+        if (chineseNumerals[numPart]) {
+            return chineseNumerals[numPart];
+        }
+        const numeric = parseInt(numPart, 10);
+        if (!isNaN(numeric)) {
+            return numeric;
+        }
+        if (numPart.startsWith('十')) {
+            return 10 + (chineseNumerals[numPart.substring(1)] || 0);
+        }
+        return 999;
+    }
+
+    function populateClassSelector() {
+        classSelector.innerHTML = '';
+        const classNames = Object.keys(allStudents);
+        
+        classNames.sort((a, b) => {
+            const numA = getNumericValue(a);
+            const numB = getNumericValue(b);
+            return numA - numB;
+        });
+
+        classNames.forEach(className => {
+            const option = document.createElement('option');
+            option.value = className;
+            option.textContent = className;
+            classSelector.appendChild(option);
+            
+            // 初始化該班級的豁免名單
+            if (!excludedStudentsMap[className]) {
+                excludedStudentsMap[className] = new Set();
+            }
+        });
+        
+        // 確保初始選單有值
+        if (classNames.length > 0) {
+            classSelector.value = classNames[0];
+        }
+
+        renderStudentGrid();
+        renderScoreOverview();
+        renderRawRecords();
+    }
+
+    function renderStudentGrid() {
+        clearSelection();
+        lastDrawnGender = null; // 切換班級時重置亂馬模式的性別紀錄
+        const selectedClass = classSelector.value;
+        if (!selectedClass) return;
+        gridTitle.textContent = `${selectedClass} 學生名單`;
+        studentGrid.innerHTML = '';
+        excludedGrid.innerHTML = ''; // 清空暫停區
+        
+        const students = allStudents[selectedClass];
+        const studentMap = new Map(students.map(s => [s.seat, s]));
+        const maxSeat = students.reduce((max, s) => s.seat > max ? s.seat : max, 0);
+        const currentExcluded = excludedStudentsMap[selectedClass] || new Set();
+
+        for (let i = 1; i <= Math.ceil(maxSeat / 10) * 10; i++) {
+            const cell = document.createElement('div');
+            cell.id = `seat-${i}`;
+            cell.className = 'student-cell border border-gray-300 p-2 rounded-md h-20 flex flex-col justify-center items-center relative';
+            const student = studentMap.get(i);
+            if (student) {
+                cell.innerHTML = `
+                    <input type="checkbox" class="student-checkbox absolute top-1 right-1 h-5 w-5 z-10 rounded border-gray-400 text-blue-600 focus:ring-blue-500">
+                    <div class="content-wrapper flex flex-col justify-center items-center h-full w-full">
+                        <span class="font-bold text-lg pointer-events-none">${i}</span>
+                        <span class="text-xs sm:text-sm pointer-events-none">${student.name}</span>
+                    </div>
+                `;
+                cell.dataset.name = student.name;
+                cell.dataset.seat = i;
+                
+                const checkbox = cell.querySelector('.student-checkbox');
+                checkbox.addEventListener('change', () => toggleStudentSelection(student, cell));
+                cell.querySelector('.content-wrapper').addEventListener('click', () => handleManualScore(student));
+
+                const isExcluded = currentExcluded.has(i);
+
+                if (isExcluded) {
+                    // 暫停區的視覺樣式：灰階、半透明
+                    cell.classList.add('bg-slate-200', 'opacity-70', 'border-slate-300', 'grayscale');
+                    excludedGrid.appendChild(cell);
+                } else {
+                    // 正常名單區的視覺樣式
+                    if (student.gender === '男') cell.classList.add('bg-green-100');
+                    else if (student.gender === '女') cell.classList.add('bg-pink-100');
+                    studentGrid.appendChild(cell);
+                }
+            } else if (i <= maxSeat) {
+                cell.innerHTML = `<span class="text-gray-400">${i}</span><span class="text-xs text-gray-400">空號</span>`;
+                cell.classList.add('bg-gray-50', 'pointer-events-none');
+                studentGrid.appendChild(cell); // 空號統一放上面
+            } else {
+                cell.classList.add('border-transparent');
+                studentGrid.appendChild(cell); // 補齊的透明格子放上面
+            }
+        }
+        resetDraw();
+    }
+    
+    function renderScoreOverview() {
+        const selectedClass = classSelector.value;
+        scoreOverviewList.innerHTML = '';
+        scoreOverviewStatus.classList.add('hidden'); // 預設隱藏狀態訊息
+
+        if (!selectedClass) {
+            scoreOverviewSection.classList.add('hidden');
+            return;
+        }
+
+        if (!scoreRecordsLoadedSuccessfully && records.length === 0) {
+            // 如果讀取雲端失敗且本地沒有紀錄
+            scoreOverviewStatus.classList.remove('hidden');
+            scoreOverviewStatus.classList.remove('text-red-600', 'font-bold', 'p-2', 'bg-red-100');
+            scoreOverviewStatus.classList.add('text-gray-500');
+            scoreOverviewStatus.innerHTML = `正在使用本機紀錄。`;
+        } else if (!scoreRecordsLoadedSuccessfully && records.length > 0) {
+            // 雲端失敗，但有本地紀錄
+            // 狀態已在 fetchRemoteRecords 中處理，此處不重複處理。
+            // 繼續往下渲染列表
+        }
+
+        const classRecords = records.filter(r => r.className === selectedClass);
+        if (classRecords.length === 0) {
+            // 無該班級紀錄
+            scoreOverviewStatus.classList.remove('hidden');
+            scoreOverviewStatus.classList.remove('text-red-600', 'font-bold', 'p-2', 'bg-red-100');
+            scoreOverviewStatus.classList.add('text-gray-500');
+            scoreOverviewStatus.innerHTML = `本班級（${selectedClass}）目前尚無積分記錄。`;
+            scoreOverviewSection.classList.remove('hidden'); // 顯示區塊，但顯示無紀錄
+            return;
+        }
+
+        const studentScores = new Map();
+        
+        classRecords.forEach(record => {
+            const studentKey = record.seat;
+            if (!studentScores.has(studentKey)) {
+                // 從學生名單中找出對應的姓名，以處理紀錄中只有座號但學生名單中沒有該座號的情況
+                let studentName = `座號 ${record.seat}`;
+                const studentList = allStudents[selectedClass] || [];
+                const studentDetail = studentList.find(s => s.seat === record.seat);
+                if (studentDetail) {
+                    studentName = studentDetail.name;
+                }
+                
+                studentScores.set(studentKey, { name: studentName, pos: 0, neg: 0, total: 0 });
+            }
+            const data = studentScores.get(studentKey);
+            const score = parseInt(record.score, 10);
+            
+            if (!isNaN(score)) {
+                if (score > 0) data.pos += score;
+                // 積分計算修正：確保扣分部分是加扣分的絕對值
+                else data.neg += Math.abs(score); 
+                data.total += score;
+            }
+        });
+
+        let hasDisplayableRecords = false;
+
+        // Convert map to array and sort by seat
+        const sortedSeats = Array.from(studentScores.keys()).sort((a, b) => a - b);
+        
+        sortedSeats.forEach(seat => {
+            const data = studentScores.get(seat);
+            if (data.pos === 0 && data.neg === 0) return; // Skip if no impact
+            
+            hasDisplayableRecords = true;
+            const row = document.createElement('div');
+            row.className = 'flex items-center bg-gray-50 p-2 rounded-lg border border-gray-200';
+            
+            // Build visual bars
+            let barsHtml = '';
+            for(let i=0; i<data.pos; i++) {
+                barsHtml += '<div class="score-bar-unit score-bar-green"></div>';
+            }
+            for(let i=0; i<data.neg; i++) {
+                barsHtml += '<div class="score-bar-unit score-bar-red"></div>';
+            }
+
+            row.innerHTML = `
+                <div class="w-16 flex-shrink-0 font-bold text-gray-700">${seat}號</div>
+                <div class="w-20 flex-shrink-0 text-gray-600 truncate mr-2">${data.name}</div>
+                <div class="flex-grow flex flex-wrap items-center mr-2">
+                    ${barsHtml}
+                </div>
+                <div class="w-12 flex-shrink-0 text-right font-bold ${data.total >= 0 ? 'text-green-600' : 'text-red-600'}">
+                    ${data.total > 0 ? '+' : ''}${data.total}
+                </div>
+            `;
+            scoreOverviewList.appendChild(row);
+        });
+
+        if (hasDisplayableRecords) {
+            scoreOverviewSection.classList.remove('hidden');
+            scoreOverviewStatus.classList.add('hidden'); // 如果有紀錄列表，隱藏狀態提示
+        } else {
+             // 無積分時，顯示無紀錄狀態
+             scoreOverviewSection.classList.remove('hidden');
+             scoreOverviewStatus.classList.remove('hidden');
+             scoreOverviewStatus.classList.add('text-gray-500');
+             scoreOverviewStatus.innerHTML = `本班級（${selectedClass}）目前尚無積分記錄。`;
+        }
+    }
+    
+    function renderRawRecords() {
+        const selectedClass = classSelector.value;
+        scoreRawRecordsTableBody.innerHTML = '';
+        noRawRecordsMessage.classList.add('hidden');
+
+        if (!selectedClass) {
+            noRawRecordsMessage.classList.remove('hidden');
+            return;
+        }
+        
+        const classRecords = records.filter(r => r.className === selectedClass);
+        if (classRecords.length === 0) {
+            noRawRecordsMessage.classList.remove('hidden');
+            return;
+        }
+
+        // 顯示最新的記錄在最上方
+        classRecords.slice().reverse().forEach(r => {
+            const row = scoreRawRecordsTableBody.insertRow();
+            
+            // 確保分數帶有 + 號（如果是正數）
+            const scoreText = `${r.score > 0 ? '+' : ''}${r.score}`;
+            const scoreClass = r.score > 0 ? 'text-green-600 font-bold' : 'text-red-600 font-bold';
+
+            row.innerHTML = `
+                <td class="px-3 py-2">${r.seat}</td>
+                <td class="px-3 py-2">${r.name}</td>
+                <td class="px-3 py-2 ${scoreClass}">${scoreText}</td>
+                <td class="px-3 py-2">${r.reason}</td>
+                <td class="px-3 py-2">${r.date}</td>
+            `;
+        });
+    }
+
+    function updateGridSelection() {
+        const studentsInClass = allStudents[classSelector.value] || [];
+        const studentMap = new Map(studentsInClass.map(s => [s.seat, s]));
+
+        // 修改：使用 document.querySelectorAll 確保上下兩個網格的儲存格都能被更新狀態
+        document.querySelectorAll('.student-cell[data-seat]').forEach(cell => {
+            const seat = parseInt(cell.dataset.seat);
+            const checkbox = cell.querySelector('.student-checkbox');
+            
+            if (selectedStudents.has(seat)) {
+                const student = studentMap.get(seat);
+                if (student) {
+                    const ringColor = student.gender === '女' ? 'ring-red-600' : 'ring-green-600';
+                    cell.classList.add('ring-4', ringColor);
+                }
+                if (checkbox) checkbox.checked = true;
+            } else {
+                cell.classList.remove('ring-4', 'ring-green-600', 'ring-red-600');
+                if (checkbox) checkbox.checked = false;
+            }
+        });
+        updateBatchScoreButton();
+    }
+
+    function toggleStudentSelection(student, cellElement) {
+        const seat = student.seat;
+        if (selectedStudents.has(seat)) {
+            selectedStudents.delete(seat);
+        } else {
+            selectedStudents.add(seat);
+        }
+        updateGridSelection();
+    }
+
+    function selectAllStudents() {
+        const selectedClass = classSelector.value;
+        const studentsInClass = allStudents[selectedClass] || [];
+        const currentExcluded = excludedStudentsMap[selectedClass] || new Set();
+        
+        // 修改：只選取「未被移至暫停區」的學生
+        studentsInClass.forEach(student => {
+            if (!currentExcluded.has(student.seat)) {
+                selectedStudents.add(student.seat);
+            }
+        });
+        updateGridSelection();
+    }
+
+    function selectStudentsByGender(gender) {
+        selectedStudents.clear();
+        const selectedClass = classSelector.value;
+        const studentsInClass = allStudents[selectedClass] || [];
+        const currentExcluded = excludedStudentsMap[selectedClass] || new Set();
+        
+        // 修改：只選取「未被移至暫停區」的特定性別學生
+        studentsInClass.forEach(student => {
+            if (student.gender === gender && !currentExcluded.has(student.seat)) {
+                selectedStudents.add(student.seat);
+            }
+        });
+        updateGridSelection();
+    }
+
+
+    function updateBatchScoreButton() {
+        if (selectedStudents.size > 0) {
+            batchScoreContainer.classList.remove('hidden');
+            batchScoreButton.textContent = `為已選 ${selectedStudents.size} 位學生加分`;
+        } else {
+            batchScoreContainer.classList.add('hidden');
+        }
+    }
+
+    function handleBatchScoreClick() {
+        if (selectedStudents.size === 0) return;
+        populateBatchScoreModal();
+        batchScoreModal.classList.remove('hidden');
+    }
+
+    function populateBatchScoreModal() {
+        selectedReasons.clear();
+        batchStudentList.innerHTML = '';
+        batchPositiveReasons.innerHTML = '';
+        batchNegativeReasons.innerHTML = '';
+
+        const studentsInClass = allStudents[classSelector.value];
+        const selectedStudentDetails = Array.from(selectedStudents)
+            .map(seat => studentsInClass.find(s => s.seat === seat))
+            .filter(s => s)
+            .sort((a, b) => a.seat - b.seat);
+        
+        selectedStudentDetails.forEach(student => {
+            const studentTag = document.createElement('div');
+            studentTag.className = 'p-1 px-2 rounded-md text-sm mb-1 flex justify-between items-center cursor-grab';
+            studentTag.textContent = `#${student.seat}-${student.name}`;
+            studentTag.dataset.seat = student.seat;
+            studentTag.draggable = true;
+
+            if (student.gender === '男') {
+                studentTag.classList.add('bg-green-200');
+            } else if (student.gender === '女') {
+                studentTag.classList.add('bg-pink-200');
+            } else {
+                studentTag.classList.add('bg-gray-200');
+            }
+
+            studentTag.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('text/plain', student.seat);
+                e.dataTransfer.effectAllowed = 'move';
+                setTimeout(() => { studentTag.classList.add('opacity-50'); }, 0);
+            });
+            studentTag.addEventListener('dragend', () => {
+                studentTag.classList.remove('opacity-50');
+            });
+            batchStudentList.appendChild(studentTag);
+        });
+
+        positiveReasons.forEach(reason => {
+            const button = document.createElement('button');
+            button.textContent = reason;
+            button.dataset.reason = reason;
+            button.dataset.score = manualScores.get(reason) || 1;
+            button.className = 'batch-reason-btn p-3 rounded-lg text-sm bg-green-200 hover:bg-green-300 btn';
+            button.onclick = handleBatchReasonClick;
+            batchPositiveReasons.appendChild(button);
+        });
+
+        negativeReasons.forEach(reason => {
+            const button = document.createElement('button');
+            button.textContent = reason;
+            button.dataset.reason = reason;
+            button.dataset.score = manualScores.get(reason) || -1;
+            button.className = 'batch-reason-btn p-3 rounded-lg text-sm bg-pink-200 hover:bg-pink-300 btn';
+            button.onclick = handleBatchReasonClick;
+            batchNegativeReasons.appendChild(button);
+        });
+
+        const batchModalContent = batchScoreModal.querySelector('.modal-content');
+        batchModalContent.ondragover = (e) => e.preventDefault();
+        batchModalContent.ondrop = (e) => {
+            e.preventDefault();
+            const seat = parseInt(e.dataTransfer.getData('text/plain'), 10);
+            if (!batchStudentList.contains(e.target)) {
+                removeSelectedStudent(seat);
+            }
+        };
+    }
+
+    function removeSelectedStudent(seat) {
+        if (selectedStudents.has(seat)) {
+            selectedStudents.delete(seat);
+            const cell = document.getElementById(`seat-${seat}`);
+            if (cell) {
+                cell.classList.remove('ring-4', 'ring-green-600', 'ring-red-600');
+                const checkbox = cell.querySelector('.student-checkbox');
+                if (checkbox) checkbox.checked = false;
+            }
+            const studentTag = batchStudentList.querySelector(`[data-seat='${seat}']`);
+            if (studentTag) studentTag.remove();
+            updateBatchScoreButton();
+            if (selectedStudents.size === 0) batchScoreModal.classList.add('hidden');
+        }
+    }
+
+    function handleBatchReasonClick(event) {
+        const button = event.target;
+        const reason = button.dataset.reason;
+        
+        if (selectedReasons.has(reason)) {
+            selectedReasons.delete(reason);
+            button.classList.remove('selected-pos', 'selected-neg');
+        } else {
+            selectedReasons.add(reason);
+            const score = parseInt(button.dataset.score);
+            button.classList.add(score > 0 ? 'selected-pos' : 'selected-neg');
+        }
+    }
+
+    function submitBatchScore() {
+        if (selectedStudents.size === 0 || selectedReasons.size === 0) {
+            alert('請至少選擇一位學生和一項理由！');
+            return;
+        }
+        
+        const studentsInClass = allStudents[classSelector.value];
+        const selectedStudentDetails = Array.from(selectedStudents).map(seat => studentsInClass.find(s => s.seat === seat)).filter(s => s);
+
+        let totalScore = 0;
+        const combinedReasons = [];
+        selectedReasons.forEach(reason => {
+            if (manualScores.has(reason)) {
+                totalScore += manualScores.get(reason);
+                combinedReasons.push(reason);
+            }
+        });
+        const combinedReasonString = combinedReasons.join('、');
+
+        selectedStudentDetails.forEach(student => {
+            const now = new Date();
+            const record = {
+                date: now.toLocaleDateString('zh-TW'),
+                time: now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+                className: classSelector.value,
+                seat: student.seat,
+                name: student.name,
+                score: totalScore,
+                reason: combinedReasonString
+            };
+            records.push(record);
+        });
+        
+        saveRecordsToLocalStorage(); // 儲存紀錄
+        renderHistory();
+        renderScoreOverview(); // Update overview
+        renderRawRecords(); // Update raw records
+        batchScoreModal.classList.add('hidden');
+        clearSelection();
+    }
+
+
+    function handleManualScore(student) {
+        resetDraw();
+        currentWinner = { className: classSelector.value, seat: student.seat, name: student.name, gender: student.gender };
+        currentScoringMode = 'manual';
+        isPositiveMode = true;
+        updateScoreGrid('manual');
+        drawArea.insertBefore(resultSection, mainContent);
+        resultSection.classList.remove('hidden');
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function startDraw() {
+        if (animationInterval) return;
+        resetDraw();
+        const selectedClass = classSelector.value;
+        const currentExcluded = excludedStudentsMap[selectedClass] || new Set();
+        
+        // 修改：過濾掉被放入暫停區的學生
+        let potentialWinners = allStudents[selectedClass].filter(s => {
+            const notExcluded = !currentExcluded.has(s.seat);
+            const notImmune = immunityToggle.checked ? !drawnStudents.has(s.seat) : true;
+            return notExcluded && notImmune;
+        });
+        
+        // 亂馬1/2 模式邏輯
+        if (ranmaToggle.checked && lastDrawnGender) {
+            const targetGender = lastDrawnGender === '男' ? '女' : '男';
+            const oppositeGenderWinners = potentialWinners.filter(s => s.gender === targetGender);
+            if (oppositeGenderWinners.length > 0) {
+                potentialWinners = oppositeGenderWinners;
+            }
+        }
+
+        if (potentialWinners.length === 0) {
+            alert('此班級已無學生可抽！'); return;
+        }
+        drawButton.disabled = true;
+        drawButton.textContent = '抽籤中...';
+        drawButton.classList.add('bg-gray-400', 'cursor-not-allowed');
+        let lastHighlighted = null;
+        animationInterval = setInterval(() => {
+            if (lastHighlighted) lastHighlighted.cell.classList.remove(lastHighlighted.highlightClass);
+            const randomStudent = potentialWinners[Math.floor(Math.random() * potentialWinners.length)];
+            const cell = document.getElementById(`seat-${randomStudent.seat}`);
+            if(cell) {
+                const highlightClass = randomStudent.gender === '女' ? 'highlight-draw-pink' : 'highlight-draw-green';
+                cell.classList.add(highlightClass);
+                lastHighlighted = { cell, highlightClass };
+            }
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(animationInterval);
+            animationInterval = null;
+            if (lastHighlighted) lastHighlighted.cell.classList.remove(lastHighlighted.highlightClass);
+            const winner = potentialWinners[Math.floor(Math.random() * potentialWinners.length)];
+            const winnerCell = document.getElementById(`seat-${winner.seat}`);
+            if(winnerCell) winnerCell.classList.add('highlight-winner');
+            currentWinner = { ...winner, className: selectedClass };
+            currentScoringMode = 'draw';
+            isPositiveMode = true;
+            updateScoreGrid('draw');
+            drawArea.insertBefore(resultSection, mainContent);
+            resultSection.classList.remove('hidden');
+            drawButton.disabled = false;
+            drawButton.textContent = '重新抽籤';
+            drawButton.classList.remove('bg-gray-400', 'cursor-not-allowed');
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 3000);
+    }
+    
+    function shuffleArray(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+
+    function getNegativeScores() {
+        if (reshuffleCount === 1) {
+            // 第一次重抽：再抽*1、-2*2、-1*5
+            return ["再抽", "-2", "-2", "-1", "-1", "-1", "-1", "-1"];
+        }
+        if (reshuffleCount >= 2) {
+            // 第二次重抽：-2*3、-1*5
+            return ["-2", "-2", "-2", "-1", "-1", "-1", "-1", "-1"];
+        }
+        // 預設，原始扣分項目
+        return ["-1", "-1", "-1", "-1", "-2", "機會", "機會", "再抽"];
+    }
+
+    function updateScoreGrid(mode) {
+        scoreGrid.innerHTML = '';
+        if (mode === 'draw') {
+            resultTitle.innerHTML = '🎉 恭喜中獎 🎉';
+            resultTitle.className = 'text-4xl font-extrabold mb-6 bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-transparent bg-clip-text animate-pulse';
+        } else {
+            resultTitle.innerHTML = '手動加扣分 (點擊中間切換)';
+            resultTitle.className = 'text-2xl font-bold mb-4';
+        }
+        const gridOrder = [0, 1, 2, 7, -1, 3, 6, 5, 4];
+        
+        if (mode === 'draw') {
+            const colors = shuffleArray(['bg-red-200', 'bg-yellow-200', 'bg-green-200', 'bg-blue-200', 'bg-indigo-200', 'bg-purple-200', 'bg-pink-200', 'bg-orange-200']);
+            let colorIndex = 0;
+            const scores = isPositiveMode ? [...positiveScores] : getNegativeScores();
+            const shuffledScores = shuffleArray(scores);
+
+            for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.classList.add('score-cell');
+                if (i === 4) {
+                    const centerColor = isPositiveMode ? 'bg-green-100 border-green-300 text-green-800' : 'bg-pink-100 border-pink-300 text-pink-800';
+                    cell.className += ` ${centerColor} border-2 text-xl sm:text-2xl font-extrabold p-2 rounded-lg flex flex-col items-center justify-center cursor-pointer`;
+                    cell.innerHTML = `${currentWinner.seat} 號<br>${currentWinner.name}`;
+                    cell.onclick = toggleScoreMode;
+                } else {
+                    cell.className += ` p-2 rounded-lg flex items-center justify-center text-center text-4xl sm:text-5xl font-semibold text-gray-700 btn can-hover ${colors[colorIndex]}`;
+                    const itemIndex = gridOrder[i];
+                    cell.textContent = itemIndex + 1;
+                    cell.dataset.score = shuffledScores[itemIndex];
+                    cell.dataset.originalColor = colors[colorIndex];
+                    cell.onclick = (e) => revealScores(e.target);
+                    colorIndex++;
+                }
+                scoreGrid.appendChild(cell);
+            }
+        } else { // Manual or Batch mode
+            const items = isPositiveMode ? positiveReasons : negativeReasons;
+            const bgColor = isPositiveMode ? 'bg-green-200 hover:bg-green-300' : 'bg-pink-200 hover:bg-pink-300';
+             for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.classList.add('score-cell');
+                if (i === 4) {
+                    const centerColor = 'bg-yellow-100 border-2 border-yellow-300 text-yellow-800';
+                    cell.className += ` ${centerColor} text-xl sm:text-2xl font-extrabold p-2 rounded-lg flex flex-col items-center justify-center cursor-pointer`;
+                    cell.innerHTML = `${currentWinner.seat} 號<br>${currentWinner.name}`;
+                    cell.onclick = toggleScoreMode;
+                } else {
+                    cell.className += ` p-2 rounded-lg flex items-center justify-center text-center text-xs sm:text-sm font-semibold text-gray-700 btn can-hover ${bgColor}`;
+                    const itemIndex = gridOrder[i];
+                    const item = items[itemIndex];
+                    cell.textContent = item;
+                    cell.onclick = () => {
+                        selectedScore = manualScores.get(item) || (isPositiveMode ? 1 : -1);
+                        selectedReason = item;
+                        submitRecord();
+                    };
+                }
+                scoreGrid.appendChild(cell);
+            }
+        }
+    }
+
+    async function revealScores(clickedCell) {
+        if (isSpinning) return;
+        isSpinning = true;
+        
+        // 禁用所有方塊的點擊與 hover 效果
+        const allItemCells = Array.from(scoreGrid.children).filter(el => el.dataset.score);
+        allItemCells.forEach(btn => {
+            btn.onclick = null;
+            btn.classList.remove('can-hover');
+        });
+
+        const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+        const revealedValue = clickedCell.dataset.score;
+        
+        // 只顯示被點擊的方塊內容
+        clickedCell.textContent = revealedValue;
+        clickedCell.classList.remove(clickedCell.dataset.originalColor);
+        
+        if (isPositiveMode) {
+            selectedScore = parseInt(revealedValue);
+            selectedReason = "抽獎獎勵";
+
+            // 為被點擊的方塊添加中獎樣式，讓它開始閃動
+            clickedCell.classList.add('text-red-600', 'font-bold', 'blinking', 'bg-yellow-300');
+            
+            // 同時翻開其他牌，並設為失效樣式
+            const otherCells = allItemCells.filter(cell => cell !== clickedCell);
+            otherCells.forEach(cell => {
+                cell.textContent = cell.dataset.score;
+                cell.classList.remove(cell.dataset.originalColor);
+                cell.classList.add('bg-gray-200', 'text-gray-500'); // 失效樣式
+            });
+            
+            // 等待閃動動畫結束後再提交紀錄
+            await sleep(1500); 
+            submitRecord();
+
+        } else { // 扣分模式
+            if (revealedValue === "機會" || revealedValue === "再抽") {
+                // 觸發洗牌
+                clickedCell.classList.add('bg-yellow-300', 'blinking');
+                await sleep(1500);
+                
+                reshuffleCount++;
+                
+                // 直接更新，不在中間顯示訊息
+                updateScoreGrid(currentScoringMode);
+                isSpinning = false; 
+                return;
+            } else {
+                // 一般扣分
+                selectedScore = parseInt(revealedValue);
+                selectedReason = "抽獎懲罰";
+                
+                // 為被點擊的方塊添加樣式
+                clickedCell.classList.add('text-white', 'font-bold', 'bg-gray-700');
+                
+                // 稍作等待後，將其他牌設為失效 (此處已修改為不改變其他方塊顏色)
+                await sleep(500);
+
+                // const otherCells = allItemCells.filter(cell => cell !== clickedCell);
+                // otherCells.forEach(cell => {
+                //     cell.classList.remove(cell.dataset.originalColor);
+                //     cell.classList.add('bg-gray-200', 'text-gray-500'); // 失效樣式
+                // });
+                
+                await sleep(1500);
+                submitRecord();
+            }
+        }
+    }
+
+    function toggleScoreMode() {
+        if(isSpinning || !currentWinner) return;
+        isPositiveMode = !isPositiveMode;
+        reshuffleCount = 0; // 切換模式時重置洗牌計數
+        updateScoreGrid(currentScoringMode);
+    }
+    
+    function submitRecord() {
+        if (!currentWinner || selectedScore === null || selectedReason === null) return;
+        
+        if (currentScoringMode === 'manual_group') {
+             const studentsInClass = allStudents[classSelector.value];
+             selectedStudents.forEach(seat => {
+                const student = studentsInClass.find(s => s.seat === seat);
+                if(student) {
+                    const now = new Date();
+                    const record = {
+                        date: now.toLocaleDateString('zh-TW'), time: now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+                        className: classSelector.value, seat: student.seat, name: student.name,
+                        score: selectedScore, reason: selectedReason
+                    };
+                    records.push(record);
+                }
+             });
+             clearSelection();
+        } else {
+            const now = new Date();
+            const record = {
+                date: now.toLocaleDateString('zh-TW'), time: now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+                className: currentWinner.className, seat: currentWinner.seat, name: currentWinner.name,
+                score: selectedScore, reason: selectedReason
+            };
+            records.push(record);
+
+            if (immunityToggle.checked && currentScoringMode === 'draw') {
+                drawnStudents.add(record.seat);
+                lastDrawnGender = currentWinner.gender; // 記錄本次中獎者性別
+                const drawnCell = document.getElementById(`seat-${record.seat}`);
+                if (drawnCell) drawnCell.classList.add('drawn-student');
+            }
+        }
+        
+        saveRecordsToLocalStorage(); // 儲存紀錄
+        renderHistory();
+        renderScoreOverview(); // Update overview
+        renderRawRecords(); // Update raw records
+        
+        selectedScore = null;
+        selectedReason = null;
+        isSpinning = false;
+        drawButton.disabled = false;
+        
+        if (currentScoringMode !== 'draw') {
+            resetDraw();
+        }
+    }
+    
+    function clearSelection() {
+        selectedStudents.clear();
+        document.querySelectorAll('.student-cell.ring-4').forEach(cell => {
+            cell.classList.remove('ring-4', 'ring-green-600', 'ring-red-600');
+        });
+        document.querySelectorAll('.student-checkbox').forEach(box => box.checked = false);
+        updateBatchScoreButton();
+    }
+    
+    function resetDraw() {
+        resultSection.classList.add('hidden');
+        document.querySelectorAll('.student-cell').forEach(cell => cell.classList.remove('highlight-winner'));
+        
+        currentWinner = null;
+        selectedScore = null;
+        selectedReason = null;
+        isSpinning = false;
+        reshuffleCount = 0; // 重置抽籤時，也重置洗牌計數
+        // lastDrawnGender = null; // <-- 移除此行，以在同班級連續抽籤時保留性別紀錄
+        drawButton.textContent = '開始抽籤';
+        drawButton.disabled = false;
+        drawButton.classList.remove('bg-gray-400', 'cursor-not-allowed');
+        clearSelection();
+    }
+
+    function renderHistory() {
+        historyTable.innerHTML = '';
+        records.slice().reverse().forEach((r, reversedIndex) => {
+            const originalIndex = records.length - 1 - reversedIndex;
+            const row = historyTable.insertRow();
+            row.innerHTML = `
+                <td class="px-6 py-4">${r.date}</td>
+                <td class="px-6 py-4">${r.time}</td>
+                <td class="px-6 py-4">${r.className}</td>
+                <td class="px-6 py-4">${r.seat}</td>
+                <td class="px-6 py-4">${r.name}</td>
+                <td class="px-6 py-4 font-bold ${r.score > 0 ? 'text-green-600' : 'text-red-600'}">${r.score > 0 ? '+' : ''}${r.score}</td>
+                <td class="px-6 py-4">${r.reason}</td>
+                <td class="px-6 py-4 text-sm font-medium">
+                    <button onclick="editRecord(${originalIndex})" class="text-indigo-600 hover:text-indigo-900 mr-4">編輯</button>
+                    <button onclick="confirmDelete(${originalIndex})" class="text-red-600 hover:text-red-900">刪除</button>
+                </td>
+            `;
+        });
+        historySection.classList.toggle('hidden', records.length === 0);
+    }
+    
+    function confirmDelete(index) {
+        recordIndexToDelete = index;
+        deleteConfirmModal.classList.remove('hidden');
+    }
+
+    function deleteRecord() {
+        if (recordIndexToDelete !== null) {
+            records.splice(recordIndexToDelete, 1);
+            saveRecordsToLocalStorage(); // 儲存紀錄
+            renderHistory();
+            renderScoreOverview(); // Update overview after delete
+            renderRawRecords(); // Update raw records
+        }
+        deleteConfirmModal.classList.add('hidden');
+        recordIndexToDelete = null;
+    }
+
+    function editRecord(index) {
+        recordIndexToEdit = index;
+        const record = records[index];
+        editScoreInput.value = record.score;
+        editReasonInput.value = record.reason;
+        editRecordModal.classList.remove('hidden');
+    }
+
+    function saveEdit() {
+        if (recordIndexToEdit !== null) {
+            const newScore = parseInt(editScoreInput.value);
+            const newReason = editReasonInput.value.trim();
+            if (isNaN(newScore)) return alert('分數必須是數字！');
+            if (!newReason) return alert('理由不能為空！');
+            records[recordIndexToEdit].score = newScore;
+            records[recordIndexToEdit].reason = newReason;
+            saveRecordsToLocalStorage(); // 儲存紀錄
+            renderHistory();
+            renderScoreOverview(); // Update overview after edit
+            renderRawRecords(); // Update raw records
+        }
+        editRecordModal.classList.add('hidden');
+        recordIndexToEdit = null;
+    }
+    
+    async function exportData() {
+        if (records.length === 0) {
+            alert('沒有記錄可以儲存！');
+            return;
+        }
+
+        const config = GOOGLE_FORM_CONFIG;
+
+        if (records.length > 0 && config.URL && !config.URL.startsWith('請在')) {
+            /*
+             // 暫時註解掉確認視窗
+              const firstRecord = records[0];
+              const params = new URLSearchParams();
+              params.append(config.ENTRY_DATE, firstRecord.date);
+              params.append(config.ENTRY_TIME, firstRecord.time);
+              params.append(config.ENTRY_CLASS, firstRecord.className);
+              params.append(config.ENTRY_SEAT, firstRecord.seat);
+              params.append(config.ENTRY_NAME, firstRecord.name);
+              params.append(config.ENTRY_SCORE, firstRecord.score);
+              params.append(config.ENTRY_REASON, firstRecord.reason);
+              
+              const fullUrl = `${config.URL}?${params.toString()}`;
+
+              newRecordCount.textContent = records.length;
+              urlDisplayTextArea.value = fullUrl;
+              urlConfirmModal.classList.remove('hidden');
+            */
+            // 直接執行儲存動作
+            await submitAllRecordsToGoogleForm();
+            downloadAllRecordsAsCsv();
+        } else {
+            downloadAllRecordsAsCsv();
+        }
+    }
+
+    function downloadAllRecordsAsCsv() {
+        const csv = "日期,時間,班級,座號,姓名,加減分,理由\r\n" + records.map(r => 
+            [r.date, r.time, r.className, r.seat, r.name, r.score, `"${r.reason.replace(/"/g, '""')}"`].join(",")
+        ).join("\r\n");
+        downloadCsv(csv, `${classSelector.value}-紀錄-${new Date().toISOString().slice(0,10)}.csv`);
+    }
+
+    async function submitAllRecordsToGoogleForm() {
+        const config = GOOGLE_FORM_CONFIG;
+        exportButton.disabled = true;
+        exportButton.textContent = '儲存中...';
+
+        const recordsToSubmit = records;
+
+        if (recordsToSubmit.length === 0) {
+            console.log("沒有記錄需要提交至 Google 表單。");
+            alert("沒有記錄可以儲存。");
+            exportButton.disabled = false;
+            exportButton.textContent = '儲存資料';
+            return;
+        }
+        
+        const promises = recordsToSubmit.map(record => {
+            const formData = new FormData();
+            formData.append(config.ENTRY_DATE, record.date);
+            formData.append(config.ENTRY_TIME, record.time);
+            formData.append(config.ENTRY_CLASS, record.className);
+            formData.append(config.ENTRY_SEAT, record.seat);
+            formData.append(config.ENTRY_NAME, record.name);
+            formData.append(config.ENTRY_SCORE, record.score);
+            formData.append(config.ENTRY_REASON, record.reason);
+
+            return fetch(config.URL, {
+                method: 'POST',
+                body: formData,
+                mode: 'no-cors'
+            });
+        });
+
+        try {
+            await Promise.all(promises);
+            console.log(`${recordsToSubmit.length} 筆紀錄已成功提交至 Google 表單。`);
+            alert(`成功將 ${recordsToSubmit.length} 筆紀錄儲存至雲端！`);
+        } catch (e) {
+            console.error("提交至 Google 表單失敗:", e);
+            alert("提交紀錄至 Google 表單時發生錯誤，請檢查網路連線或表單設定。");
+        } finally {
+            exportButton.disabled = false;
+            exportButton.textContent = '儲存資料';
+        }
+    }
+    
+    function downloadCsv(csvContent, fileName) {
+        const bom = "\uFEFF";
+        const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.setAttribute("download", fileName);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+</script>
+</body>
+</html>
