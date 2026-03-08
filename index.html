@@ -146,7 +146,16 @@
                 
                 <!-- 學生積分概況區 -->
                 <div id="scoreOverviewSection" class="mt-8 border-t pt-6">
-                    <h3 class="text-xl font-bold mb-4 text-center text-gray-700">學生積分概況</h3>
+                    <div class="grid grid-cols-3 items-center mb-4">
+                        <div></div> <!-- 用於版面平衡的空區塊 -->
+                        <h3 class="text-xl font-bold text-center text-gray-700 m-0">學生積分概況</h3>
+                        <div class="text-right">
+                            <button id="exportScoreBtn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-1.5 px-3 rounded-lg text-sm shadow-sm transition-colors btn inline-flex items-center justify-center gap-1" title="匯出本班積分">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                                匯出
+                            </button>
+                        </div>
+                    </div>
                     <div id="scoreOverviewStatus" class="text-center text-gray-500 mb-4">正在載入積分數據...</div>
                     <div id="scoreOverviewList" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3"></div>
                     
@@ -308,6 +317,44 @@
                     <span id="batchBtnText">送出紀錄</span>
                     <span id="batchBtnSpinner" class="spinner !border-white !border-b-transparent hidden"></span>
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Score Modal -->
+    <div id="exportScoreModal" class="modal-overlay hidden">
+        <div class="modal-content !max-w-xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-gray-800" id="exportModalTitle">班級積分總表</h3>
+                <button id="closeExportModalBtn" class="text-gray-400 hover:text-gray-600 text-2xl font-bold focus:outline-none">&times;</button>
+            </div>
+            <p class="text-sm text-gray-500 mb-4">您可以直接點擊下方「複製內容」，將表格貼至 Excel 或 Google 試算表中。</p>
+            <div class="max-h-80 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-inner">
+                <table class="w-full text-sm text-left text-gray-600">
+                    <thead class="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0 border-b border-gray-200 shadow-sm">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-center w-1/4">座號</th>
+                            <th scope="col" class="px-6 py-3 text-center w-2/4">姓名</th>
+                            <th scope="col" class="px-6 py-3 text-center w-1/4">總積分</th>
+                        </tr>
+                    </thead>
+                    <tbody id="exportScoreTableBody">
+                        <!-- 動態生成內容 -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-6">
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="copySeatCheckbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 cursor-pointer">
+                    <label for="copySeatCheckbox" class="text-sm font-medium text-gray-700 cursor-pointer select-none">複製座號</label>
+                </div>
+                <div class="flex gap-3">
+                    <button id="doneExportBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-lg btn transition-colors">關閉</button>
+                    <button id="copyExportDataBtn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg btn transition-colors shadow-md flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        <span>複製內容</span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -646,6 +693,88 @@
     document.getElementById('saveEditButton').addEventListener('click', saveEditToCloud);
     document.getElementById('cancelDeleteButton').addEventListener('click', () => document.getElementById('deleteConfirmModal').classList.add('hidden'));
     document.getElementById('confirmDeleteButton').addEventListener('click', deleteRecordFromCloud);
+
+    // 匯出積分視窗事件
+    document.getElementById('exportScoreBtn').addEventListener('click', () => {
+        const selectedClass = classSelector.value;
+        if (!selectedClass || !allStudents[selectedClass]) return;
+
+        document.getElementById('exportModalTitle').textContent = `${selectedClass} 積分總表`;
+        
+        const students = allStudents[selectedClass];
+        const classRecords = records.filter(r => r.className === selectedClass);
+        
+        // 計算該班所有人總分
+        const scoreMap = new Map();
+        classRecords.forEach(r => {
+            if (!isNaN(r.score)) {
+                const current = scoreMap.get(r.seat) || 0;
+                scoreMap.set(r.seat, current + r.score);
+            }
+        });
+
+        // 取得最大座號，以確保從 1 號印到最後一號
+        const maxSeat = students.reduce((max, s) => s.seat > max ? s.seat : max, 0);
+        const studentMap = new Map(students.map(s => [s.seat, s]));
+
+        const tbody = document.getElementById('exportScoreTableBody');
+        tbody.innerHTML = '';
+
+        for (let i = 1; i <= maxSeat; i++) {
+            const student = studentMap.get(i);
+            if (student) {
+                const totalScore = scoreMap.get(i) || 0;
+                const scoreColor = totalScore > 0 ? 'text-green-600' : (totalScore < 0 ? 'text-red-600' : 'text-gray-400');
+                
+                const tr = document.createElement('tr');
+                tr.className = 'border-b hover:bg-gray-50';
+                tr.innerHTML = `
+                    <td class="px-6 py-3 text-center font-medium">${i}</td>
+                    <td class="px-6 py-3 text-center">${student.name}</td>
+                    <td class="px-6 py-3 text-center font-bold ${scoreColor}">${totalScore}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+        }
+
+        document.getElementById('exportScoreModal').classList.remove('hidden');
+    });
+
+    document.getElementById('closeExportModalBtn').addEventListener('click', () => document.getElementById('exportScoreModal').classList.add('hidden'));
+    document.getElementById('doneExportBtn').addEventListener('click', () => document.getElementById('exportScoreModal').classList.add('hidden'));
+    
+    // 複製匯出內容至剪貼簿
+    document.getElementById('copyExportDataBtn').addEventListener('click', () => {
+        const tbody = document.getElementById('exportScoreTableBody');
+        const includeSeat = document.getElementById('copySeatCheckbox').checked;
+        let text = ''; // 不再加入標題列
+        
+        tbody.querySelectorAll('tr').forEach(tr => {
+            const tds = tr.querySelectorAll('td');
+            const seat = tds[0].innerText;
+            const score = tds[2].innerText;
+            
+            // 根據是否勾選「複製座號」來決定格式，完全不複製姓名
+            if (includeSeat) {
+                text += `${seat}\t${score}\n`;
+            } else {
+                text += `${score}\n`;
+            }
+        });
+        
+        // 建立隱藏的 textarea 進行複製，相容性最高
+        const el = document.createElement('textarea');
+        el.value = text;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        
+        const btnText = document.querySelector('#copyExportDataBtn span');
+        const oldText = btnText.innerText;
+        btnText.innerText = '已複製！';
+        setTimeout(() => btnText.innerText = oldText, 2000);
+    });
 
 
     // ==========================================
