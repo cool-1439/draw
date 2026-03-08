@@ -86,9 +86,14 @@
             <!-- 班級選擇與學生名單區 -->
             <div id="main-content" class="bg-white p-6 rounded-2xl shadow-lg">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-                    <div class="flex-grow">
-                        <label for="classSelector" class="block mb-2 text-sm font-medium text-gray-900">選擇班級</label>
-                        <select id="classSelector" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"></select>
+                    <div class="flex-grow flex items-center gap-3">
+                        <div class="flex-grow">
+                            <label for="classSelector" class="block mb-2 text-sm font-medium text-gray-900">選擇班級</label>
+                            <select id="classSelector" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"></select>
+                        </div>
+                        <div id="autoClassIndicator" class="hidden flex-shrink-0 mt-6">
+                            <span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded border border-green-300" title="已根據目前課表自動為您切換班級">✨ 自動定位</span>
+                        </div>
                     </div>
                     <div class="flex items-center gap-4 self-end flex-wrap justify-end">
                         <div class="flex items-center space-x-2">
@@ -476,10 +481,7 @@
                 const decodedData = decodeURIComponent(atob(storedRecords));
                 const allLocalRecords = JSON.parse(decodedData);
                 // 讀取暫存時依然要過濾學期，確保畫面乾淨
-                records = allLocalRecords.filter(r => isRecordInCurrentSemester(r.date)).map(r => ({
-                    ...r,
-                    saved: r.saved !== undefined ? r.saved : true
-                }));
+                records = allLocalRecords.filter(r => isRecordInCurrentSemester(r.date));
             } catch (e) {
                 console.warn("讀取紀錄失敗:", e);
                 localStorage.removeItem(RECORDS_STORAGE_KEY);
@@ -574,14 +576,12 @@
             console.warn("使用預設加扣分項目。");
         }
 
-        // 【新增】確保所有資料(包含預設項目)都載入後，才統一建立下拉選單並綁定事件
         populateReasonDropdown();
         setupReasonDropdown();
 
         if (apiResult && apiResult.success) {
             document.getElementById('systemWarning').classList.add('hidden');
             const allRemoteRecords = apiResult.data;
-            // 恢復學期過濾功能，並將資料寫入全域變數
             records = allRemoteRecords.filter(r => isRecordInCurrentSemester(r.date));
             saveRecordsToLocalStorage();
         } else {
@@ -636,12 +636,72 @@
         return d.getTime();
     }
 
+    // ==========================================
+    // 自動課表判定邏輯 (新增)
+    // ==========================================
+
+    // 將時間轉換為目前是第幾節課 (包含課前 10 分鐘下課時間的判定)
+    function getCurrentPeriod() {
+        const now = new Date();
+        const h = now.getHours();
+        const m = now.getMinutes();
+        const time = h * 60 + m; // 換算成當天經過的分鐘數
+
+        // 判定範圍涵蓋課前的下課時間，讓老師在下課時打開程式就能選到下一節的班級
+        if (time >= 8*60 + 0  && time < 9*60 + 0)  return 1; // 判定範圍 08:00-09:00 (實際 1 節: 08:10-09:00)
+        if (time >= 9*60 + 0  && time < 10*60 + 0) return 2; // 判定範圍 09:00-10:00 (實際 2 節: 09:10-10:00)
+        if (time >= 10*60 + 0 && time < 11*60 + 0) return 3; // 判定範圍 10:00-11:00 (實際 3 節: 10:10-11:00)
+        if (time >= 11*60 + 0 && time < 12*60 + 10) return 4; // 判定範圍 11:00-12:10 (實際 4 節: 11:10-12:00)
+        if (time >= 12*60 + 50 && time < 13*60 + 55) return 5; // 判定範圍 12:50-13:55 (實際 5 節: 13:05-13:55)
+        if (time >= 13*60 + 55 && time < 14*60 + 55) return 6; // 判定範圍 13:55-14:55 (實際 6 節: 14:05-14:55)
+        if (time >= 14*60 + 55 && time < 16*60 + 0)  return 7; // 判定範圍 14:55-16:00 (實際 7 節: 15:10-16:00)
+        if (time >= 16*60 + 0  && time < 17*60 + 10) return 8; // 判定範圍 16:00-17:10 (實際 8 節: 16:10-17:00)
+        
+        return -1; // 不在上述上課時間內
+    }
+
+    // 根據星期與節次回傳對應的班級代碼或名稱
+    function getScheduledClass() {
+        const CLASS_MAP = {
+            105: '七年五班',
+            111: '七年十一班',
+            113: '七年十三班',
+            116: '七年十六班',
+            119: '七年十九班'
+        };
+
+        // 依照圖片所建立的課表矩陣 { 星期幾: { 第幾節: 班級代碼 } }
+        const SCHEDULE = {
+            1: { 2: 105, 4: 119, 6: 116, 7: 113, 8: 111 }, // 星期一
+            2: { 3: 111, 4: 119, 6: 105, 7: 113, 8: 116 }, // 星期二
+            3: { 1: 113, 2: 119, 3: 111, 5: 105, 7: 116, 8: 113 }, // 星期三
+            4: { 1: 105, 3: 111, 4: 116, 8: 119 }, // 星期四
+            5: { 1: 113, 2: 116, 6: 111, 7: 119, 8: 105 } // 星期五
+        };
+
+        const now = new Date();
+        const day = now.getDay(); // 0(Sun) ~ 6(Sat)
+        if (day === 0 || day === 6) return null; // 週末不上課
+
+        const period = getCurrentPeriod();
+        if (period === -1) return null; // 目前非上課時間
+
+        const classCode = SCHEDULE[day] && SCHEDULE[day][period];
+        if (classCode) {
+            // 將代號 (如 105) 轉換為我們系統使用的班級名稱 (如 '七年五班')
+            return CLASS_MAP[classCode] || classCode.toString();
+        }
+        
+        return null; // 目前該節無課
+    }
 
     // ==========================================
     // 事件監聽綁定
     // ==========================================
     
     classSelector.addEventListener('change', () => {
+        // 如果使用者手動切換班級，隱藏「自動定位」的提示標籤
+        document.getElementById('autoClassIndicator').classList.add('hidden');
         excludedStudents.clear();
         rawCurrentPage = 1; historyCurrentPage = 1;
         renderStudentGrid(); renderScoreOverview(); renderRawRecords(); renderHistory();
@@ -747,14 +807,13 @@
     document.getElementById('copyExportDataBtn').addEventListener('click', () => {
         const tbody = document.getElementById('exportScoreTableBody');
         const includeSeat = document.getElementById('copySeatCheckbox').checked;
-        let text = ''; // 不再加入標題列
+        let text = ''; 
         
         tbody.querySelectorAll('tr').forEach(tr => {
             const tds = tr.querySelectorAll('td');
             const seat = tds[0].innerText;
             const score = tds[2].innerText;
             
-            // 根據是否勾選「複製座號」來決定格式，完全不複製姓名
             if (includeSeat) {
                 text += `${seat}\t${score}\n`;
             } else {
@@ -762,7 +821,6 @@
             }
         });
         
-        // 建立隱藏的 textarea 進行複製，相容性最高
         const el = document.createElement('textarea');
         el.value = text;
         document.body.appendChild(el);
@@ -796,7 +854,23 @@
             option.value = className; option.textContent = className;
             classSelector.appendChild(option);
         });
-        if (classNames.length > 0) classSelector.value = classNames[0];
+        
+        // 自動課表判定邏輯：載入時尋找應該要上的班級
+        const autoClassCode = getScheduledClass();
+        let matchedClass = null;
+
+        if (autoClassCode) {
+            // 嘗試從名單中尋找完全相符 (例如 '七年五班') 或部分相符 (如果名單叫 '105') 的班級
+            matchedClass = classNames.find(c => c === autoClassCode || c.includes(autoClassCode));
+        }
+        
+        if (matchedClass) {
+            classSelector.value = matchedClass;
+            document.getElementById('autoClassIndicator').classList.remove('hidden'); // 顯示閃亮的提示標籤
+        } else if (classNames.length > 0) {
+            classSelector.value = classNames[0];
+        }
+
         renderStudentGrid(); renderScoreOverview(); renderRawRecords(); renderHistory();
     }
     
@@ -958,7 +1032,6 @@
         sorted.slice(start, start + RAW_PER_PAGE).forEach(r => {
             const row = scoreRawRecordsTableBody.insertRow();
             const scoreClass = r.score > 0 ? 'text-green-600 font-bold' : 'text-red-600 font-bold';
-            // 移除防呆標籤邏輯
 
             row.innerHTML = `
                 <td class="px-3 py-2">${r.seat}</td>
@@ -990,7 +1063,6 @@
 
         if (!selectedClass) return;
 
-        // 加上原始索引，過濾出當前下拉選單的班級，並依時間由新到舊排序
         const sorted = records.map((r, index) => ({ r, oIdx: index }))
                               .filter(item => item.r.className === selectedClass)
                               .sort((a, b) => parseDateTime(b.r.date, b.r.time) - parseDateTime(a.r.date, a.r.time));
@@ -1014,7 +1086,6 @@
             pageData.forEach(item => {
                 const r = item.r;
                 const row = historyTable.insertRow();
-                // 移除防呆標籤邏輯
 
                 row.innerHTML = `
                     <td class="px-6 py-4">${r.date}</td>
@@ -1032,7 +1103,6 @@
             });
         }
         
-        // 只要系統裡有任何紀錄，就顯示歷史記錄區塊外框
         document.getElementById('historySection').classList.toggle('hidden', records.length === 0);
 
         sel.innerHTML = '';
@@ -1056,14 +1126,11 @@
     // 核心邏輯 (抽籤、加扣分與雲端同步)
     // ==========================================
 
-    // 送出至雲端 API (Create)
     async function writeRecordsToCloud(newRecords) {
         if(newRecords.length === 0) return;
         
-        // 背景發送至 API (不再先寫入本地，確保所見即雲端真實資料)
         const result = await apiRequest('create', newRecords);
         
-        // 如果成功，重新載入以獲取最新的資料與 _rowNumber
         if(result && result.success) {
             const reloadResult = await apiRequest('read');
             if(reloadResult && reloadResult.success) {
@@ -1170,7 +1237,6 @@
         
         const newRecords = Array.from(selectedStudents).map(seat => {
             const s = allStudents[classSelector.value].find(st => st.seat === seat);
-            // 移除 saved: false 屬性
             return { date: d, time: t, className: classSelector.value, seat: s.seat, name: s.name, score: totalScore, reason: reasonStr };
         });
         
@@ -1306,7 +1372,6 @@
             date: now.toLocaleDateString('zh-TW'), time: now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
             className: currentWinner.className, seat: currentWinner.seat, name: currentWinner.name,
             score: score, reason: reason
-            // 移除 saved: false 屬性
         };
         
         if (document.getElementById('immunityToggle').checked && currentScoringMode === 'draw') {
